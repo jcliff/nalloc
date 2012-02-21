@@ -29,11 +29,14 @@ class Nalloc::Driver::Fusion < Nalloc::Driver
   VM_STORE_PATH     = File.join(CONFIG_DIR, "vms")
 
   TEMPLATE_DIR              = Nalloc.path("templates/fusion")
-  DEFAULT_VMX_TEMPLATE_PATH = File.join(TEMPLATE_DIR, "zygote.vmx.erb")
   IFACES_TEMPLATE_PATH      = File.join(TEMPLATE_DIR, "interfaces.erb")
   RESOLV_CONF_TEMPLATE_PATH = File.join(TEMPLATE_DIR, "resolv.conf.erb")
-
+  DEFAULT_VMX_TEMPLATE_PATH = File.join(TEMPLATE_DIR, "zygote.vmx.erb")
+  DEFAULT_VMDK_TEMPLATE_PATH =
+      "~/Documents/Virtual Machines.localized/nalloc.vmwarevm/nalloc.vmdk"
   DEFAULT_SSH_KEY = "id_rsa"
+  DEFAULT_ROOT_PASS = 'nalloc'
+  DEFAULT_USERNAME = 'nalloc'
 
   class << self
     def save_adapters(adapters)
@@ -121,10 +124,10 @@ class Nalloc::Driver::Fusion < Nalloc::Driver
   #
   # @return block    Finishes allocating node, blocks until completion.
   def start_allocating_node(cluster_id, name, specs, cluster_dir, props)
-    vmdk_path =
-        File.expand_path(get_required_spec_option(name, specs, :vmdk_path))
-    root_pass = get_required_spec_option(name, specs, :root_pass)
-    user      = get_required_spec_option(name, specs, :username)
+    vmdk_path = specs[:vmdk_path] || DEFAULT_VMDK_TEMPLATE_PATH
+    vmdk_path = File.expand_path(vmdk_path)
+    root_pass = specs[:root_pass] || DEFAULT_ROOT_PASS
+    user      = specs[:username] || DEFAULT_USERNAME
 
     ssh_key_name     = ENV['NALLOC_SSH_KEY'] || DEFAULT_SSH_KEY
     private_key_path = Nalloc::Node.find_ssh_key(ssh_key_name)
@@ -134,8 +137,10 @@ class Nalloc::Driver::Fusion < Nalloc::Driver
 
     vmx_path = create_vm(vmx_template_path, cluster_dir, name, vmdk_path,
                          "vmnet#{props[:adapter]}",
-                         :memsize_MB => specs[:memsize_MB],
-                         :guest_os   => specs[:guest_os])
+                         :memsize_MB => specs[:memsize_MB] || '512',
+                         :guest_os   => specs[:guest_os] || 'ubuntu')
+
+    system_identity = compute_system_identity(vmdk_path)
 
     vmrun("start", vmx_path, "nogui")
 
@@ -165,8 +170,10 @@ class Nalloc::Driver::Fusion < Nalloc::Driver
       # Bring up networking
       gr.call("/etc/init.d/networking", "restart")
 
-      { "identity"          => vmx_path,
+      {
+        "identity"          => vmx_path,
         "public_ip_address" => props[:ipaddr],
+        "system_identity"   => system_identity,
         "ssh" => {
           "user" => user,
           "private_key_name" => ssh_key_name,
@@ -393,5 +400,12 @@ class Nalloc::Driver::Fusion < Nalloc::Driver
     # <nalloc_root>/vms/<cluster_id>/<node_name>.vmwarevm/<node_name>.vmx
     parts = vmx_path.split(File::SEPARATOR)
     parts[-3]
+  end
+
+  def compute_system_identity(vmdk_path)
+    digest = `openssl dgst -sha256 < #{vmdk_path.inspect}`.chomp
+    raise "Couldn't compute system_identity for #{vmdk_path}" unless $?.success?
+
+    digest
   end
 end
